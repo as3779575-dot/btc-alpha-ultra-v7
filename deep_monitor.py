@@ -59,6 +59,23 @@ def fetch_klines(interval: str, limit: int = 400) -> pd.DataFrame:
     return df[["timestamp","open","high","low","close","volume","quote_volume","trades","taker_base","taker_quote"]]
 
 
+def fetch_weekly_compatible(limit_daily: int = 1000) -> pd.DataFrame:
+    daily = fetch_klines("1d", limit_daily)
+    x = daily.set_index("timestamp")
+    out = x.resample("W-SUN", label="right", closed="right").agg(
+        open=("open","first"),
+        high=("high","max"),
+        low=("low","min"),
+        close=("close","last"),
+        volume=("volume","sum"),
+        quote_volume=("quote_volume","sum"),
+        trades=("trades","sum"),
+        taker_base=("taker_base","sum"),
+        taker_quote=("taker_quote","sum"),
+    )
+    return out.dropna(subset=["open","high","low","close"]).reset_index()
+
+
 def pack(df: pd.DataFrame) -> dict[str, Any]:
     if len(df) < 80:
         return {}
@@ -124,7 +141,9 @@ def structure_for(df: pd.DataFrame) -> dict[str,Any]:
 def fetch_timeframes():
     dfs={}; packs={}
     with ThreadPoolExecutor(max_workers=len(TFS)) as ex:
-        futs={ex.submit(fetch_klines,v,400):k for k,v in TFS.items()}
+        futs={}
+        for k,v in TFS.items():
+            futs[ex.submit(fetch_weekly_compatible,1000) if k=="1w" else ex.submit(fetch_klines,v,400)] = k
         for f in as_completed(futs):
             k=futs[f]; dfs[k]=f.result(); packs[k]=pack(dfs[k])
     structs={k:structure_for(dfs[k]) for k in ["4h","1h","30m","15m"]}
@@ -205,17 +224,31 @@ def derivatives():
     out={"oi":None,"oi_change_pct":None,"taker_ratio":None,"long_short":None,"basis_rate":None,"errors":[]}
     def safe(label, fn):
         try:return fn()
-        except Exception as e: out["errors"].append(label); return None
-    oi=safe("open_interest",lambda:get(FAPI,"/fapi/v1/openInterest",{"symbol":SYMBOL})); out["oi"]=float(oi["openInterest"]) if oi else None
+        except Exception: out["errors"].append(label); return None
+
+    oi=safe("open_interest",lambda:get(FAPI,"/fapi/v1/openInterest",{"symbol":SYMBOL}))
+    out["oi"]=float(oi["openInterest"]) if oi else None
+
     hist=safe("oi_hist",lambda:get(FAPI,"/futures/data/openInterestHist",{"symbol":SYMBOL,"period":"5m","limit":6})) or []
+    hist=sorted(hist,key=lambda x:int(x.get("timestamp",0)))
     if len(hist)>=2:
-        a=float(hist[0]["sumOpenInterestValue"]); b=float(hist[-1]["sumOpenInterestValue"]); out["oi_change_pct"]=(a/b-1)*100 if b else None
+        old=float(hist[0]["sumOpenInterestValue"]); new=float(hist[-1]["sumOpenInterestValue"])
+        out["oi_change_pct"]=((new/old)-1)*100 if old else None
+
     ts=safe("taker_ratio",lambda:get(FAPI,"/futures/data/takerlongshortRatio",{"symbol":SYMBOL,"period":"5m","limit":6})) or []
-    if ts: out["taker_ratio"]=float(ts[0].get("buySellRatio",1))
+    ts=sorted(ts,key=lambda x:int(x.get("timestamp",0)))
+    if ts:
+        out["taker_ratio"]=float(ts[-1].get("buySellRatio",1))
+
     ls=safe("global_ls",lambda:get(FAPI,"/futures/data/globalLongShortAccountRatio",{"symbol":SYMBOL,"period":"5m","limit":6})) or []
-    if ls: out["long_short"]=float(ls[0].get("longShortRatio",1))
+    ls=sorted(ls,key=lambda x:int(x.get("timestamp",0)))
+    if ls:
+        out["long_short"]=float(ls[-1].get("longShortRatio",1))
+
     bs=safe("basis",lambda:get(FAPI,"/futures/data/basis",{"pair":SYMBOL,"contractType":"PERPETUAL","period":"5m","limit":6})) or []
-    if bs: out["basis_rate"]=float(bs[0].get("basisRate",0))
+    bs=sorted(bs,key=lambda x:int(x.get("timestamp",0)))
+    if bs:
+        out["basis_rate"]=float(bs[-1].get("basisRate",0))
     return out
 
 
@@ -293,8 +326,7 @@ def live_derivative_gate(side:int, d:dict, tf:dict, micro_:dict):
     else:
         if funding<-EXTREME_FUNDING and ls<1/EXTREME_LS: return False,reasons+["SELL veto: extreme negative funding + crowded shorts"]
         if funding>=-EXTREME_FUNDING: votes+=1; reasons.append("funding not excessively crowded")
-    return votes>=MIN_DERIV_CONFIRM, reasons
-
+    required = (d.get("oi_change_pct") is not None and d.get("taker_ratio") is not None and d.get("long_short") is not None and d.get("basis_rate") is not None)\n    if not required: return False, reasons+["derivatives data incomplete"]\n    return votes>=MIN_DERIV_CONFIRM, reasons\n
 
 def confluence_score(tf, structs, side, micro_):
     s=0.0; reasons=[]
@@ -376,7 +408,7 @@ def main():
             opt = opt_cache
             if time.time() >= news_next or not news_cache:
                 news_cache = news_snapshot(); news_next = time.time() + NEWS_REFRESH_SECONDS
-            news = news_cache; news_ok=len(news.get("high_impact_recent",[]))==0
+            news = news_cache; news_ok=bool(news.get("available")) and len(news.get("high_impact_recent",[]))==0
             # Options are context: a failed options request is not itself a trade veto, but a contradictory live options skew can be.
             options_ok=True; opt_context="unavailable"
             totals=opt.get("expiry_totals",[])
