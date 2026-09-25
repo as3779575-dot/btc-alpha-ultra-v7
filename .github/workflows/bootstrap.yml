@@ -1,0 +1,51 @@
+name: BTC Alpha Ultra V7 Bootstrap
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Build and validate strict historical model
+        env:
+          HIST_START: '2020-01-01'
+          HIST_END: '2026-08-31'
+          WIN_RATE_FLOOR: '0.70'
+          MODEL_PROBABILITY_FLOOR: '0.70'
+          RR_FLOOR: '2.0'
+          PRECISION_TP_R: '2.0'
+          REQUIRE_EVERY_FOLD: 'true'
+          MIN_OOS_SIGNALS: '60'
+          FINAL_HOLDOUT_FRACTION: '0.10'
+        run: python bootstrap.py
+      - name: Verify deployment artifact
+        run: python - <<'PY'
+          import json, pathlib
+          p=pathlib.Path('models/selection.json')
+          if not p.exists(): raise SystemExit('selection.json missing')
+          j=json.loads(p.read_text())
+          if not j.get('eligible'): raise SystemExit('No strategy passed strict historical gate')
+          a=j.get('selected',{})
+          h=a.get('holdout',{})
+          if float(a.get('pooled_oos_win_rate') or 0) < 0.70 or float(h.get('win_rate') or 0) < 0.70:
+            raise SystemExit('Selected artifact does not have >70% pooled OOS and holdout win rates')
+          print('STRICT MODEL READY')
+        PY
+      - name: Commit model artifact
+        run: |
+          git config user.name 'btc-alpha-bootstrap[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add models/selected_model.joblib models/selection.json
+          git commit -m 'bootstrap: validated BTC model' || true
+          git push
