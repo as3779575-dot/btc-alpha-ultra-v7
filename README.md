@@ -53,7 +53,7 @@ The live gate adds independent current evidence:
 - late-entry protection
 - no daily alert ceiling and no live alert cooldown
 
-An options/news endpoint failure does not create a fake value; it is reported as unavailable. A known high-impact recent headline blocks a fresh entry rather than attempting to guess its direction.
+Live options, derivatives, and news inputs are fail-closed for a fresh entry: an unavailable required layer blocks the signal rather than silently substituting a neutral value. A known high-impact recent headline also blocks a fresh entry.
 
 ## Cloud setup
 
@@ -70,4 +70,4 @@ An options/news endpoint failure does not create a fake value; it is reported as
 
 This is a signal research system, not guaranteed profitability. A historical >70% win rate is an out-of-sample measurement of the selected historical rules; it is not a promise that future live trades will exceed 70%.
 
-Historical 1-minute OHLCV cannot reconstruct the historical order book, live spread, options chain, or news tape exactly. Those are therefore used as **live veto/confirmation layers**, not falsely claimed as part of the 2020–2026 historical backtest.
+Historical 1-minute OHLCV cannot reconstruct the historical order book, live spread, options chain, or news tape exactly. Those are therefore used as **live veto/confirmation layers**, not falsely claimed as part of the historical backtest. The live feature construction is kept aligned with the historical feature definitions, including the selected strategy, barrier parameters, weekly configuration, volatility regime, and completed-candle timing.
