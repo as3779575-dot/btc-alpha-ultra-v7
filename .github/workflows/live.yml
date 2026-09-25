@@ -71,21 +71,26 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          set -euo pipefail
+          set -u
 
-          SYMBOL=BTCUSDT \
-          MODEL_PATH=models/selected_model.joblib \
-          python deep_monitor.py &
+          run_monitor() {
+            local symbol="$1"
+            local model="$2"
+            while true; do
+              echo "Starting $symbol monitor..."
+              SYMBOL="$symbol" MODEL_PATH="$model" python -u deep_monitor.py
+              status=$?
+              echo "$symbol monitor exited with status $status; restarting in 15 seconds."
+              sleep 15
+            done
+          }
+
+          run_monitor BTCUSDT models/selected_model.joblib &
           BTC_PID=$!
 
-          SYMBOL=ETHUSDT \
-          MODEL_PATH=models/ETHUSDT/selected_model.joblib \
-          python deep_monitor.py &
+          run_monitor ETHUSDT models/ETHUSDT/selected_model.joblib &
           ETH_PID=$!
 
           trap 'kill "$BTC_PID" "$ETH_PID" 2>/dev/null || true' EXIT
 
-          wait -n "$BTC_PID" "$ETH_PID"
-          status=$?
-          echo "One monitor exited with status $status; stopping the other."
-          exit "$status"
+          wait "$BTC_PID" "$ETH_PID"
