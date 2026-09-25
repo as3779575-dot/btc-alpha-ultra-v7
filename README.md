@@ -1,6 +1,6 @@
-# BTC Alpha Ultra V7 — Deep Precision Cloud Monitor
+# BTC Alpha Ultra V7 — Deep Precision Cloud Monitor (BTCUSDT + ETHUSDT)
 
-This version is designed around **few, high-selectivity BTCUSDT alerts**. It does not place trades; it only sends Telegram research alerts for manual execution.
+This version is designed around **high-selectivity BTCUSDT and ETHUSDT alerts**. Each asset uses its own historical model and its own strict deployment gate. It does not place trades; it only sends Telegram research alerts for manual execution.
 
 ## Signal hierarchy
 
@@ -16,7 +16,7 @@ This version is designed around **few, high-selectivity BTCUSDT alerts**. It doe
 
 ## Historical gate
 
-The bootstrap workflow downloads BTCUSDT 1-minute Binance Futures history and runs the strict V5 model-selection process. A live model is only accepted when the selected artifact passes the configured hard gate, including:
+The bootstrap workflow downloads BTCUSDT and ETHUSDT 1-minute Binance Futures history and runs the strict historical model-selection process separately for each asset. A live model is only accepted when the selected artifact passes the configured hard gate, including:
 
 - gross target >= 2R
 - pooled walk-forward OOS win rate >= 70%
@@ -26,6 +26,10 @@ The bootstrap workflow downloads BTCUSDT 1-minute Binance Futures history and ru
 - holdout pass
 
 The live monitor exits instead of trading when this artifact gate is not satisfied.
+
+## Asset-specific models
+
+BTCUSDT and ETHUSDT are not scored with the same performance claim. Each asset must pass the configured historical OOS and final-holdout gates independently before its live monitor can run.
 
 ## Live deep research
 
@@ -47,7 +51,7 @@ The live gate adds independent current evidence:
 - recent Bitcoin/crypto headline risk via public RSS
 - adversarial vetoes for contradictory positioning/crowding
 - late-entry protection
-- maximum 4 alerts per UTC day and 45-minute cooldown
+- no daily alert ceiling and no live alert cooldown
 
 An options/news endpoint failure does not create a fake value; it is reported as unavailable. A known high-impact recent headline blocks a fresh entry rather than attempting to guess its direction.
 
@@ -55,12 +59,12 @@ An options/news endpoint failure does not create a fake value; it is reported as
 
 1. Create a **public GitHub repository** and upload this folder's contents.
 2. Go to **Actions → BTC Alpha Ultra V7 Bootstrap → Run workflow**.
-3. Let bootstrap finish. It commits `models/selected_model.joblib` and `models/selection.json` when the strict historical gate passes.
+3. Let bootstrap finish. It commits the BTCUSDT artifacts at `models/selected_model.joblib` and `models/selection.json`, plus the ETHUSDT artifacts at `models/ETHUSDT/selected_model.joblib` and `models/ETHUSDT/selection.json`, only when their strict historical gates pass.
 4. Add repository secrets:
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
 5. Go to **Actions → BTC Alpha Ultra V7 Deep Live Monitor → Run workflow**.
-6. The live workflow subsequently runs on the scheduled six-hour blocks.
+6. The live workflow subsequently runs BTCUSDT and ETHUSDT monitors concurrently on the scheduled blocks.
 
 ## Important
 
