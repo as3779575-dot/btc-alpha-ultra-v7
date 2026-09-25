@@ -326,7 +326,11 @@ def live_derivative_gate(side:int, d:dict, tf:dict, micro_:dict):
     else:
         if funding<-EXTREME_FUNDING and ls<1/EXTREME_LS: return False,reasons+["SELL veto: extreme negative funding + crowded shorts"]
         if funding>=-EXTREME_FUNDING: votes+=1; reasons.append("funding not excessively crowded")
-    required = (d.get("oi_change_pct") is not None and d.get("taker_ratio") is not None and d.get("long_short") is not None and d.get("basis_rate") is not None)\n    if not required: return False, reasons+["derivatives data incomplete"]\n    return votes>=MIN_DERIV_CONFIRM, reasons\n
+    required = (d.get("oi_change_pct") is not None and d.get("taker_ratio") is not None and d.get("long_short") is not None and d.get("basis_rate") is not None)
+    if not required:
+        return False, reasons + ["derivatives data incomplete"]
+    return votes >= MIN_DERIV_CONFIRM, reasons
+
 
 def confluence_score(tf, structs, side, micro_):
     s=0.0; reasons=[]
