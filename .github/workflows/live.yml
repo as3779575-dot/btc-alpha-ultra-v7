@@ -1,9 +1,9 @@
 name: BTC Alpha Ultra V7 Deep Live Monitor
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   schedule:
-    - cron: '7 0,6,12,18 * * *'
+    - cron: "7 0,6,12,18 * * *"
 
 permissions:
   contents: write
@@ -16,22 +16,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Verify model
         run: |
           python - <<'PY'
-          import json, pathlib
-          p = pathlib.Path('models/selected_model.joblib')
-          s = pathlib.Path('models/selection.json')
+          import json
+          import pathlib
+          p = pathlib.Path("models/selected_model.joblib")
+          s = pathlib.Path("models/selection.json")
           if not p.exists() or not s.exists():
-              raise SystemExit('Run BTC Alpha Ultra V7 Bootstrap first.')
+              raise SystemExit("Run BTC Alpha Ultra V7 Bootstrap first.")
           j = json.loads(s.read_text())
-          a = j.get('selected', {})
-          if not j.get('eligible') or float(a.get('pooled_oos_win_rate') or 0) < 0.70 or float(a.get('holdout', {}).get('win_rate') or 0) < 0.70:
-              raise SystemExit('Historical >70% gate not satisfied.')
-        PY
+          a = j.get("selected", {})
+          hold = a.get("holdout", {})
+          if not j.get("eligible"):
+              raise SystemExit("Historical model is not eligible.")
+          if float(a.get("pooled_oos_win_rate") or 0) < 0.70:
+              raise SystemExit("Historical pooled OOS win rate is below 70%.")
+          if float(hold.get("win_rate") or 0) < 0.70 or not hold.get("passed"):
+              raise SystemExit("Historical holdout gate is below 70%.")
+          print("HISTORICAL GATE OK")
+          PY
       - name: Live monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
