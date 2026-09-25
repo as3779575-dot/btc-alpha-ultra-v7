@@ -1,12 +1,13 @@
 name: BTC Alpha Ultra V7 Deep Live Monitor
 
 on:
-  workflow_dispatch: {}
-  push:
-    paths:
-      - ".github/workflows/live.yml"
+  workflow_dispatch:
   schedule:
-    - cron: "7 0,6,12,18 * * *"
+    - cron: "7 0 * * *"
+    - cron: "57 5 * * *"
+    - cron: "47 11 * * *"
+    - cron: "37 17 * * *"
+    - cron: "27 23 * * *"
 
 permissions:
   contents: write
