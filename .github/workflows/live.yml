@@ -23,28 +23,53 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Verify model
+      - name: Verify BTC and ETH models
         run: |
           python - <<'PY'
           import json
           import pathlib
-          p = pathlib.Path("models/selected_model.joblib")
-          s = pathlib.Path("models/selection.json")
-          if not p.exists() or not s.exists():
-              raise SystemExit("Run BTC Alpha Ultra V7 Bootstrap first.")
-          j = json.loads(s.read_text())
-          a = j.get("selected", {})
-          hold = a.get("holdout", {})
-          if not j.get("eligible"):
-              raise SystemExit("Historical model is not eligible.")
-          if float(a.get("pooled_oos_win_rate") or 0) < 0.70:
-              raise SystemExit("Historical pooled OOS win rate is below 70%.")
-          if float(hold.get("win_rate") or 0) < 0.70 or not hold.get("passed"):
-              raise SystemExit("Historical holdout gate is below 70%.")
-          print("HISTORICAL GATE OK")
+
+          paths = {
+              "BTCUSDT": (
+                  pathlib.Path("models/selected_model.joblib"),
+                  pathlib.Path("models/selection.json"),
+              ),
+              "ETHUSDT": (
+                  pathlib.Path("models/ETHUSDT/selected_model.joblib"),
+                  pathlib.Path("models/ETHUSDT/selection.json"),
+              ),
+          }
+
+          for symbol, (model_path, selection_path) in paths.items():
+              if not model_path.exists() or not selection_path.exists():
+                  raise SystemExit(f"{symbol}: model artifact missing. Run BTC Alpha Ultra V7 Bootstrap.")
+              j = json.loads(selection_path.read_text())
+              a = j.get("selected", {})
+              hold = a.get("holdout", {})
+              if not j.get("eligible"):
+                  raise SystemExit(f"{symbol}: historical model is not eligible.")
+              if float(a.get("pooled_oos_win_rate") or 0) < 0.70:
+                  raise SystemExit(f"{symbol}: historical pooled OOS win rate is below 70%.")
+              if float(hold.get("win_rate") or 0) < 0.70 or not hold.get("passed"):
+                  raise SystemExit(f"{symbol}: historical holdout gate is below 70%.")
+              print(f"{symbol}: HISTORICAL GATE OK")
           PY
-      - name: Live monitor
+      - name: Live BTC + ETH monitors
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python deep_monitor.py
+        run: |
+          set -euo pipefail
+
+          SYMBOL=BTCUSDT           MODEL_PATH=models/selected_model.joblib           STATE_PATH=runtime_state_BTCUSDT.json           python deep_monitor.py &
+          BTC_PID=$!
+
+          SYMBOL=ETHUSDT           MODEL_PATH=models/ETHUSDT/selected_model.joblib           STATE_PATH=runtime_state_ETHUSDT.json           python deep_monitor.py &
+          ETH_PID=$!
+
+          trap 'kill "$BTC_PID" "$ETH_PID" 2>/dev/null || true' EXIT
+
+          wait -n "$BTC_PID" "$ETH_PID"
+          status=$?
+          echo "One monitor exited with status $status; stopping the other."
+          exit "$status"
