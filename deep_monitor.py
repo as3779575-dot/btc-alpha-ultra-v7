@@ -20,10 +20,8 @@ SYMBOL = os.getenv("SYMBOL", "BTCUSDT").upper()
 FAPI = "https://fapi.binance.com"
 EAPI = "https://eapi.binance.com"
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "models/selected_model.joblib"))
-STATE_PATH = Path(os.getenv("STATE_PATH", "runtime_state.json"))
 SCAN_SECONDS = max(10, int(os.getenv("SCAN_SECONDS", "15")))
 KLINE_REFRESH_SECONDS = max(30, int(os.getenv("KLINE_REFRESH_SECONDS", "60")))
-MAX_ALERTS_PER_UTC_DAY = max(0, int(os.getenv("MAX_ALERTS_PER_UTC_DAY", "0")))  # 0 = unlimited daily alerts
 MAX_SPREAD_BPS = float(os.getenv("MAX_SPREAD_BPS", "5.0"))
 MAX_LATE_R = float(os.getenv("MAX_LATE_R", "0.55"))
 STRUCTURE_MIN = float(os.getenv("STRUCTURE_MIN", "12.0"))
@@ -253,13 +251,17 @@ def options_snapshot(spot:float):
         return {"available":False,"reason":f"options_error:{type(e).__name__}"}
 
 
-NEWS_URL="https://news.google.com/rss/search?q=Bitcoin%20BTC%20crypto&hl=en-US&gl=US&ceid=US:en"
+NEWS_URL_TEMPLATE="https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
 HIGH_IMPACT_TERMS=("SEC","FOMC","Federal Reserve","CPI","inflation","jobs report","payroll","hack","exploit","bankruptcy","ETF approval","ETF rejection","war","sanctions","emergency","liquidation")
 
 
 def news_snapshot():
     try:
-        r=requests.get(NEWS_URL,timeout=REQUEST_TIMEOUT,headers={"User-Agent":"Mozilla/5.0 BTC-Alpha/7.0"}); r.raise_for_status(); root=ET.fromstring(r.text); now=now_utc(); items=[]
+        import urllib.parse
+        asset = SYMBOL.replace("USDT", "")
+        query = urllib.parse.quote(f"{asset} crypto {SYMBOL}")
+        news_url = NEWS_URL_TEMPLATE.format(query=query)
+        r=requests.get(news_url,timeout=REQUEST_TIMEOUT,headers={"User-Agent":"Mozilla/5.0 BTC-Alpha/7.0"}); r.raise_for_status(); root=ET.fromstring(r.text); now=now_utc(); items=[]
         for it in root.findall("./channel/item")[:15]:
             title=(it.findtext("title") or "").strip(); pub=(it.findtext("pubDate") or "").strip(); link=(it.findtext("link") or "").strip();
             try: dt=email.utils.parsedate_to_datetime(pub).astimezone(timezone.utc)
@@ -318,28 +320,12 @@ def levels(tf, structs, side, entry, stop_atr=1.2, target_r=2.0):
     return stop,risk,tp2,room
 
 
-def state_default(): return {"day":now_utc().strftime("%Y-%m-%d"),"alerts":0,"last_alert":0.0}
+def setup_key(symbol: str, side: int, candle: str) -> str:
+    # A signal is tied to the completed 15m model candle. This prevents the same
+    # unchanged setup from being sent repeatedly every 15 seconds, without any
+    # time-based cooldown. A new model candle can generate a new signal immediately.
+    return f"{symbol}|{side}|{candle}"
 
-def load_state():
-    p=STATE_PATH
-    if not p.exists(): return state_default()
-    try:s=json.loads(p.read_text())
-    except Exception:return state_default()
-    return s if s.get("day")==now_utc().strftime("%Y-%m-%d") else state_default()
-
-def save_state(s):
-    p=STATE_PATH; p.write_text(json.dumps(s,indent=2))
-    if os.getenv("GITHUB_ACTIONS")=="true" and os.getenv("GITHUB_REF_NAME"):
-        try:
-            import subprocess
-            subprocess.run(["git","add",str(p)],check=True,capture_output=True,text=True)
-            status=subprocess.run(["git","status","--porcelain","--",str(p)],check=True,capture_output=True,text=True).stdout.strip()
-            if status:
-                subprocess.run(["git","config","user.name","btc-alpha-monitor[bot]"],check=True,capture_output=True,text=True)
-                subprocess.run(["git","config","user.email","41898282+github-actions[bot]@users.noreply.github.com"],check=True,capture_output=True,text=True)
-                subprocess.run(["git","commit","-m",f"state: {SYMBOL} alerts {int(s.get('alerts',0))}"],check=True,capture_output=True,text=True)
-                subprocess.run(["git","push","origin",f"HEAD:{os.environ['GITHUB_REF_NAME']}"],check=True,capture_output=True,text=True)
-        except Exception as e: print(f"[STATE] persistence failed: {e}",flush=True)
 
 def tg(msg):
     token=os.environ["TELEGRAM_BOT_TOKEN"]; chat=os.environ["TELEGRAM_CHAT_ID"]
@@ -356,13 +342,12 @@ def main():
     if oos<0.70 or holdwr<0.70 or not hold.get("passed"): raise SystemExit("Historical >70% deployment gate not satisfied.")
     gate=artifact.get("signal_gate",{}); threshold=float(gate.get("threshold",0.80)); margin=float(gate.get("margin",0.05)); barrier=artifact.get("barrier",{"stop_atr":1.2,"target_r":2.0,"horizon_minutes":60})
     stop_atr=float(barrier.get("stop_atr",1.2)); target_r=float(barrier.get("target_r",2.0))
-    daily_cap = "unlimited" if MAX_ALERTS_PER_UTC_DAY == 0 else str(MAX_ALERTS_PER_UTC_DAY)
-    print(f"[START] {SYMBOL} | historical OOS={oos:.3%} holdout={holdwr:.3%} | model p>={threshold:.2f} | MTF 4H/1H/30M/15M + derivatives/options/news | max {daily_cap}/day",flush=True)
+    print(f"[START] {SYMBOL} | historical OOS={oos:.3%} holdout={holdwr:.3%} | model p>={threshold:.2f} | MTF 4H/1H/30M/15M + derivatives/options/news | unlimited alerts | no time cooldown",flush=True)
     try:
         tg(f"📡 {SYMBOL} Alpha Ultra V7 Telegram connection successful")
-        tg(f"✅ {SYMBOL} Alpha Ultra V7 Deep monitor started\nHistorical OOS: {oos:.1%} | holdout: {holdwr:.1%}\nMTF + structure + derivatives + options + news\nPrimary target: {target_r:.1f}R | daily alerts: {daily_cap}")
+        tg(f"✅ {SYMBOL} Alpha Ultra V7 Deep monitor started\nHistorical OOS: {oos:.1%} | holdout: {holdwr:.1%}\nMTF + structure + derivatives + options + news\nPrimary target: {target_r:.1f}R | unlimited alerts | no time cooldown")
     except Exception as e: print(f"[TELEGRAM] startup failed: {e}",flush=True)
-    cached=None; last_candle=None; next_refresh=0; deriv_cache={}; deriv_next=0; opt_cache={}; opt_next=0; news_cache={}; news_next=0; ob_hist=[]; state=load_state()
+    cached=None; last_candle=None; next_refresh=0; deriv_cache={}; deriv_next=0; opt_cache={}; opt_next=0; news_cache={}; news_next=0; ob_hist=[]; sent_keys=set(); alert_count=0
     while True:
         t0=time.time()
         try:
@@ -400,10 +385,9 @@ def main():
                 if side==1 and pc<0.35: options_ok=False
                 if side==-1 and pc>3.0: options_ok=False
             all_ok=(prob_ok and ht_ok and setup_ok and flow_ok and vol_ok and conf>=STRUCTURE_MIN and spread_ok and ob_ok and room_ok and risk_ok and late_ok and deriv_ok and news_ok and options_ok)
-            state=load_state()
-            if MAX_ALERTS_PER_UTC_DAY > 0 and state["alerts"] >= MAX_ALERTS_PER_UTC_DAY: all_ok=False
             print(f"[SCAN] {'BUY' if side==1 else 'SELL' if side==-1 else 'WAIT'} p={p:.3f} conf={conf:.1f} 4H={structs['4h']['direction']} 1H={structs['1h']['direction']} 30M={structs['30m']['direction']} 15M={structs['15m']['direction']} ATR={atr_pct:.2f}% OB={micro_['ob20']:.2f} spread={micro_['spread_bps']} room={room/max(risk,1e-12):.2f}R OIΔ={deriv.get('oi_change_pct')} taker={deriv.get('taker_ratio')} funding={micro_.get('funding')} -> {'ALERT' if all_ok else 'WAIT'}",flush=True)
-            if all_ok:
+            signal_key=setup_key(SYMBOL,side,candle) if side else ""
+            if all_ok and signal_key not in sent_keys:
                 tp25=entry+(2.5*risk if side==1 else -2.5*risk)
                 msg=(f"{'🟢' if side==1 else '🔴'} {SYMBOL} ALPHA ULTRA V7 — {'BUY' if side==1 else 'SELL'}\n\n"
                      f"Entry: {fmt(entry)}\nStop-loss: {fmt(stop)}\nTP1: {fmt(entry+(risk if side==1 else -risk))}\nTP2 (2R): {fmt(tp2)}\nTP3 (2.5R): {fmt(tp25)}\nR:R: {target_r:.2f}:1 primary\n\n"
@@ -414,7 +398,7 @@ def main():
                      f"Global long/short: {deriv.get('long_short')} | basis rate: {deriv.get('basis_rate')} | ADL risk: {micro_.get('adl')}\n{opt_context}\n"
                      f"Room to HTF obstacle: {room/risk:.2f}R | late move: {late_r:.2f}R\n\n"
                      f"Why passed: {'; '.join((reasons+dr)[:8])}\n\nManual execution only. Historical win rate is not a guarantee of future performance.")
-                tg(msg); state["alerts"]=int(state.get("alerts",0))+1; state["last_alert"]=time.time(); save_state(state); print(f"[ALERT] sent {state['alerts']}/{MAX_ALERTS_PER_UTC_DAY}",flush=True)
+                tg(msg); sent_keys.add(signal_key); alert_count += 1; print(f"[ALERT] sent {alert_count} (new 15M setup)",flush=True)
         except Exception as e: print(f"[ERROR] {type(e).__name__}: {e} -> WAIT",flush=True)
         time.sleep(max(0.1,SCAN_SECONDS-(time.time()-t0)))
 
