@@ -20,6 +20,7 @@ SYMBOL = os.getenv("SYMBOL", "BTCUSDT").upper()
 FAPI = "https://fapi.binance.com"
 EAPI = "https://eapi.binance.com"
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "models/selected_model.joblib"))
+STATE_PATH = Path(os.getenv("STATE_PATH", "runtime_state.json"))
 SCAN_SECONDS = max(10, int(os.getenv("SCAN_SECONDS", "15")))
 KLINE_REFRESH_SECONDS = max(30, int(os.getenv("KLINE_REFRESH_SECONDS", "60")))
 MAX_ALERTS_PER_UTC_DAY = max(0, int(os.getenv("MAX_ALERTS_PER_UTC_DAY", "0")))  # 0 = unlimited daily alerts
@@ -281,14 +282,14 @@ def levels(tf, structs, side, entry, stop_atr=1.2, target_r=2.0):
 def state_default(): return {"day":now_utc().strftime("%Y-%m-%d"),"alerts":0,"last_alert":0.0}
 
 def load_state():
-    p=Path("runtime_state.json")
+    p=STATE_PATH
     if not p.exists(): return state_default()
     try:s=json.loads(p.read_text())
     except Exception:return state_default()
     return s if s.get("day")==now_utc().strftime("%Y-%m-%d") else state_default()
 
 def save_state(s):
-    p=Path("runtime_state.json"); p.write_text(json.dumps(s,indent=2))
+    p=STATE_PATH; p.write_text(json.dumps(s,indent=2))
     if os.getenv("GITHUB_ACTIONS")=="true" and os.getenv("GITHUB_REF_NAME"):
         try:
             import subprocess
@@ -320,7 +321,7 @@ def main():
     print(f"[START] {SYMBOL} | historical OOS={oos:.3%} holdout={holdwr:.3%} | model p>={threshold:.2f} | MTF 4H/1H/30M/15M + derivatives/options/news | max {daily_cap}/day",flush=True)
     try:
         tg("📡 BTC Alpha Ultra V7 Telegram connection successful")
-        tg(f"✅ BTC Alpha Ultra V7 Deep monitor started\nHistorical OOS: {oos:.1%} | holdout: {holdwr:.1%}\nMTF + structure + derivatives + options + news\nPrimary target: {target_r:.1f}R | daily alerts: {daily_cap}")
+        tg(f"✅ {SYMBOL} Alpha Ultra V7 Deep monitor started\nHistorical OOS: {oos:.1%} | holdout: {holdwr:.1%}\nMTF + structure + derivatives + options + news\nPrimary target: {target_r:.1f}R | daily alerts: {daily_cap}")
     except Exception as e: print(f"[TELEGRAM] startup failed: {e}",flush=True)
     cached=None; last_candle=None; next_refresh=0; deriv_cache={}; deriv_next=0; opt_cache={}; opt_next=0; news_cache={}; news_next=0; ob_hist=[]; state=load_state()
     while True:
