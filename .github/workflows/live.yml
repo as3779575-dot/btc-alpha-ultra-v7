@@ -20,15 +20,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Verify model
-        run: python - <<'PY'
+        run: |
+          python - <<'PY'
           import json, pathlib
-          p=pathlib.Path('models/selected_model.joblib')
-          s=pathlib.Path('models/selection.json')
-          if not p.exists() or not s.exists(): raise SystemExit('Run BTC Alpha Ultra V7 Bootstrap first.')
-          j=json.loads(s.read_text())
-          a=j.get('selected',{})
-          if not j.get('eligible') or float(a.get('pooled_oos_win_rate') or 0) < 0.70 or float(a.get('holdout',{}).get('win_rate') or 0) < 0.70:
-            raise SystemExit('Historical >70% gate not satisfied.')
+          p = pathlib.Path('models/selected_model.joblib')
+          s = pathlib.Path('models/selection.json')
+          if not p.exists() or not s.exists():
+              raise SystemExit('Run BTC Alpha Ultra V7 Bootstrap first.')
+          j = json.loads(s.read_text())
+          a = j.get('selected', {})
+          if not j.get('eligible') or float(a.get('pooled_oos_win_rate') or 0) < 0.70 or float(a.get('holdout', {}).get('win_rate') or 0) < 0.70:
+              raise SystemExit('Historical >70% gate not satisfied.')
         PY
       - name: Live monitor
         env:
