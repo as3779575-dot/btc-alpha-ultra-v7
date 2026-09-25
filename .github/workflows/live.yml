@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Verify BTC and ETH models
+      - name: Syntax check\n        run: python -m py_compile deep_monitor.py\n      - name: Verify BTC and ETH models
         run: |
           python - <<'PY'
           import json
