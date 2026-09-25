@@ -318,7 +318,9 @@ def main():
     stop_atr=float(barrier.get("stop_atr",1.2)); target_r=float(barrier.get("target_r",2.0))
     daily_cap = "unlimited" if MAX_ALERTS_PER_UTC_DAY == 0 else str(MAX_ALERTS_PER_UTC_DAY)
     print(f"[START] {SYMBOL} | historical OOS={oos:.3%} holdout={holdwr:.3%} | model p>={threshold:.2f} | MTF 4H/1H/30M/15M + derivatives/options/news | max {daily_cap}/day",flush=True)
-    try: tg(f"✅ BTC Alpha Ultra V7 Deep monitor started\nHistorical OOS: {oos:.1%} | holdout: {holdwr:.1%}\nMTF + structure + derivatives + options + news\nPrimary target: {target_r:.1f}R | max {MAX_ALERTS_PER_UTC_DAY}/UTC day")
+    try:
+        tg("📡 BTC Alpha Ultra V7 Telegram connection successful")
+        tg(f"✅ BTC Alpha Ultra V7 Deep monitor started\nHistorical OOS: {oos:.1%} | holdout: {holdwr:.1%}\nMTF + structure + derivatives + options + news\nPrimary target: {target_r:.1f}R | daily alerts: {daily_cap}")
     except Exception as e: print(f"[TELEGRAM] startup failed: {e}",flush=True)
     cached=None; last_candle=None; next_refresh=0; deriv_cache={}; deriv_next=0; opt_cache={}; opt_next=0; news_cache={}; news_next=0; ob_hist=[]; state=load_state()
     while True:
