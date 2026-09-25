@@ -232,7 +232,7 @@ def options_snapshot(spot:float):
         for exp in expiries:
             exp_code=datetime.fromtimestamp(exp/1000, tz=timezone.utc).strftime("%y%m%d")
             try:
-                oi=get(EAPI,"/eapi/v1/openInterest",{"underlyingAsset":"BTC","expiration":exp_code})
+                oi=get(EAPI,"/eapi/v1/openInterest",{"underlyingAsset":SYMBOL.replace("USDT",""),"expiration":exp_code})
             except Exception:
                 continue
             call=put=0.0
@@ -405,7 +405,7 @@ def main():
             print(f"[SCAN] {'BUY' if side==1 else 'SELL' if side==-1 else 'WAIT'} p={p:.3f} conf={conf:.1f} 4H={structs['4h']['direction']} 1H={structs['1h']['direction']} 30M={structs['30m']['direction']} 15M={structs['15m']['direction']} ATR={atr_pct:.2f}% OB={micro_['ob20']:.2f} spread={micro_['spread_bps']} room={room/max(risk,1e-12):.2f}R OIΔ={deriv.get('oi_change_pct')} taker={deriv.get('taker_ratio')} funding={micro_.get('funding')} -> {'ALERT' if all_ok else 'WAIT'}",flush=True)
             if all_ok:
                 tp25=entry+(2.5*risk if side==1 else -2.5*risk)
-                msg=(f"{'🟢' if side==1 else '🔴'} BTC ALPHA ULTRA V7 — {'BUY' if side==1 else 'SELL'}\n\n"
+                msg=(f"{'🟢' if side==1 else '🔴'} {SYMBOL} ALPHA ULTRA V7 — {'BUY' if side==1 else 'SELL'}\n\n"
                      f"Entry: {fmt(entry)}\nStop-loss: {fmt(stop)}\nTP1: {fmt(entry+(risk if side==1 else -risk))}\nTP2 (2R): {fmt(tp2)}\nTP3 (2.5R): {fmt(tp25)}\nR:R: {target_r:.2f}:1 primary\n\n"
                      f"Historical OOS win rate: {oos:.1%}\nHistorical holdout win rate: {holdwr:.1%}\nLive model probability: {p:.3f}\nMTF confluence: {conf:.1f}\n"
                      f"4H/1H/30M/15M: {structs['4h']['direction']}/{structs['1h']['direction']}/{structs['30m']['direction']}/{structs['15m']['direction']}\n"
