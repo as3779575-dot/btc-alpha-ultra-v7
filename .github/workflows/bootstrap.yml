@@ -33,22 +33,26 @@ jobs:
         run: |
           python - <<'PY'
           import json, pathlib
-          p = pathlib.Path('models/selection.json')
-          if not p.exists():
-              raise SystemExit('selection.json missing')
-          j = json.loads(p.read_text())
-          if not j.get('eligible'):
-              raise SystemExit('No strategy passed strict historical gate')
-          a = j.get('selected', {})
-          h = a.get('holdout', {})
-          if float(a.get('pooled_oos_win_rate') or 0) < 0.70 or float(h.get('win_rate') or 0) < 0.70:
-              raise SystemExit('Selected artifact does not have >=70% pooled OOS and holdout win rates')
-          print('STRICT MODEL READY')
+          paths = {
+              "BTCUSDT": pathlib.Path('models/selection.json'),
+              "ETHUSDT": pathlib.Path('models/ETHUSDT/selection.json'),
+          }
+          for symbol, p in paths.items():
+              if not p.exists():
+                  raise SystemExit(f'{symbol}: selection.json missing')
+              j = json.loads(p.read_text())
+              if not j.get('eligible'):
+                  raise SystemExit(f'{symbol}: no strategy passed strict historical gate')
+              a = j.get('selected', {})
+              h = a.get('holdout', {})
+              if float(a.get('pooled_oos_win_rate') or 0) < 0.70 or float(h.get('win_rate') or 0) < 0.70:
+                  raise SystemExit(f'{symbol}: selected artifact does not have >=70% pooled OOS and holdout win rates')
+              print(f'{symbol}: STRICT MODEL READY')
           PY
       - name: Commit model artifact
         run: |
           git config user.name 'btc-alpha-bootstrap[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add models/selected_model.joblib models/selection.json
+          git add models/selected_model.joblib models/selection.json models/ETHUSDT/selected_model.joblib models/ETHUSDT/selection.json
           git commit -m 'bootstrap: validated BTC model' || true
           git push
