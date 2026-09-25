@@ -2,15 +2,16 @@ name: BTC Alpha Ultra V7 Deep Live Monitor
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - ".github/workflows/live.yml"
+  workflow_run:
+    workflows: ["BTC Alpha Ultra V7 Bootstrap"]
+    types: [completed]
   schedule:
     - cron: "7 0 * * *"
-    - cron: "57 5 * * *"
-    - cron: "47 11 * * *"
-    - cron: "37 17 * * *"
-    - cron: "27 23 * * *"
+    - cron: "7 4 * * *"
+    - cron: "7 8 * * *"
+    - cron: "7 12 * * *"
+    - cron: "7 16 * * *"
+    - cron: "7 20 * * *"
 
 concurrency:
   group: btc-alpha-ultra-v7-live
@@ -21,6 +22,7 @@ permissions:
 
 jobs:
   monitor:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -32,6 +34,8 @@ jobs:
         run: pip install -r requirements.txt
       - name: Syntax check
         run: python -m py_compile deep_monitor.py
+
+      - name: Verify BTC and ETH models
         run: |
           python - <<'PY'
           import json
