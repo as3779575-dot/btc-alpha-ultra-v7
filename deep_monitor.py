@@ -76,7 +76,7 @@ def pack(df: pd.DataFrame) -> dict[str, Any]:
     close=float(last.close); vol=float(last.volume)
     taker=float(2*last.taker_base/max(vol,1e-12)-1); qdelta=float(2*last.taker_quote/max(float(last.quote_volume),1e-12)-1)
     atr_pct=float(atr_pct_s.iloc[-2]);
-    vol_reg=float(pd.Series((tr/c).replace([np.inf,-np.inf],np.nan)).rolling(60,min_periods=20).rank(pct=True).iloc[-2]) if len(df)>=20 else 0.5
+    vol_reg=float(atr_pct_s.rolling(60,min_periods=20).rank(pct=True).iloc[-2]) if len(df)>=20 else 0.5
     return {
         "timestamp": str(last.timestamp), "open":float(last.open),"high":float(last.high),"low":float(last.low),"close":close,
         "volume":vol,"ema20":float(e20s.iloc[-2]),"ema50":float(e50s.iloc[-2]),"ema20_gap":close/max(float(e20s.iloc[-2]),1e-12)-1,
@@ -133,26 +133,65 @@ def fetch_timeframes():
     return dfs,packs,structs
 
 
-def model_row(tf: dict[str,dict], ts:datetime) -> dict[str,float]:
-    order=["1w","1d","4h","1h","15m","5m"]
+def model_row(tf: dict[str,dict], artifact: dict) -> dict[str,float]:
+    weekly = bool(artifact.get("weekly", False))
+    order = ["1w","1d","4h","1h","15m","5m"] if weekly else ["1d","4h","1h","15m","5m"]
     row={}
     for name in order:
         z=tf[name]
-        fields={"ret1":z.get("ret1"),"ret4":z.get("ret4"),"ret12":z.get("ret12"),"ema20":z.get("ema20_gap"),"ema50":z.get("ema50_gap"),"ema_slope":z.get("ema_slope"),"atr":z.get("atr"),"rsi":z.get("rsi"),"volz":z.get("volume_z"),"range20":z.get("range20"),"taker_delta":z.get("taker_delta"),"quote_delta":z.get("quote_delta"),"body":z.get("body"),"upper_wick":z.get("upper_wick"),"lower_wick":z.get("lower_wick"),"breakout_up":z.get("breakout_up"),"breakout_down":z.get("breakout_down")}
-        for k,v in fields.items(): row[f"{name}_{k}"]=0.0 if v is None or not np.isfinite(v) else float(v)
+        fields={"ret1":z.get("ret1"),"ret4":z.get("ret4"),"ret12":z.get("ret12"),
+                "ema20":z.get("ema20_gap"),"ema50":z.get("ema50_gap"),"ema_slope":z.get("ema_slope"),
+                "atr":z.get("atr"),"rsi":z.get("rsi"),"volz":z.get("volume_z"),
+                "range20":z.get("range20"),"taker_delta":z.get("taker_delta"),
+                "quote_delta":z.get("quote_delta"),"body":z.get("body"),
+                "upper_wick":z.get("upper_wick"),"lower_wick":z.get("lower_wick"),
+                "breakout_up":z.get("breakout_up"),"breakout_down":z.get("breakout_down")}
+        for k,v in fields.items():
+            row[f"{name}_{k}"]=0.0 if v is None or not np.isfinite(v) else float(v)
     daily=["1d","4h","1h","15m","5m"]
-    row["trend_votes"]=float(sum(np.sign(row.get(f"{x}_ema20",0)) for x in daily)); row["momentum_votes"]=float(sum(np.sign(row.get(f"{x}_ret4",0)) for x in daily))
-    row["flow_score"]=row.get("15m_taker_delta",0)+row.get("5m_taker_delta",0); row["vol_regime"]=float(tf["5m"].get("vol_regime",0.5) or 0.5)
-    row["hour"]=float(ts.hour); row["dow"]=float(ts.weekday()); row["hour_sin"]=math.sin(2*math.pi*ts.hour/24); row["hour_cos"]=math.cos(2*math.pi*ts.hour/24); row["dow_sin"]=math.sin(2*math.pi*ts.weekday()/7); row["dow_cos"]=math.cos(2*math.pi*ts.weekday()/7)
-    score=row["trend_votes"]+0.5*row["momentum_votes"]; row["side"]=1.0 if score>=3 else -1.0 if score<=-3 else 0.0; row["primary_score"]=float(score); row["strategy_id"]=0.0; row["stop_atr"]=1.2; row["horizon_hours"]=1.0
+    row["trend_votes"]=float(sum(np.sign(row.get(f"{x}_ema20",0)) for x in daily))
+    row["momentum_votes"]=float(sum(np.sign(row.get(f"{x}_ret4",0)) for x in daily))
+    row["flow_score"]=row.get("15m_taker_delta",0)+row.get("5m_taker_delta",0)
+    row["vol_regime"]=float(tf["5m"].get("vol_regime",0.5) or 0.5)
+
+    # Historical training uses the 5m candle timestamp after right-labeled resampling.
+    # Live Binance klines use candle open time, so use the completed 5m candle's close timestamp.
+    ts=pd.Timestamp(tf["5m"]["timestamp"])
+    ts=ts + pd.Timedelta(minutes=5)
+    row["hour"]=float(ts.hour)
+    row["dow"]=float(ts.dayofweek)
+    row["hour_sin"]=math.sin(2*math.pi*ts.hour/24)
+    row["hour_cos"]=math.cos(2*math.pi*ts.hour/24)
+    row["dow_sin"]=math.sin(2*math.pi*ts.weekday()/7)
+    row["dow_cos"]=math.cos(2*math.pi*ts.weekday()/7)
+
+    trend=row["trend_votes"]; mom=row["momentum_votes"]; flow=row["flow_score"]
+    if artifact.get("strategy") == "trend_alignment":
+        score=trend + 0.5*mom
+    elif artifact.get("strategy") == "trend_flow":
+        score=trend + 0.5*mom + 2.0*flow
+    elif artifact.get("strategy") == "breakout_flow":
+        bu=row.get("5m_breakout_up",0.0); bd=row.get("5m_breakout_down",0.0)
+        score=trend + 0.5*mom + 2.0*flow + 2.0*bu - 2.0*bd
+    else:
+        score=trend + 0.5*mom
+
+    row["side"]=1.0 if score>=3.0 else -1.0 if score<=-3.0 else 0.0
+    row["primary_score"]=float(score)
+    strategies=artifact.get("config",{}).get("strategies",("trend_alignment","trend_flow","breakout_flow"))
+    row["strategy_id"]=float(list(strategies).index(artifact["strategy"]))
+    row["stop_atr"]=float(artifact["barrier"]["stop_atr"])
+    row["horizon_hours"]=float(artifact["barrier"]["horizon_minutes"])/60.0
     return row
 
 
-def predict(artifact, tf, ts):
-    row=model_row(tf,ts); x=pd.DataFrame([{c:row.get(c,0.0) for c in artifact["features"]}]).replace([np.inf,-np.inf],np.nan).fillna(0.0)
-    raw=float(artifact["model"].predict_proba(x)[0,1]); cal=artifact.get("calibrator"); prob=float(cal.predict([raw])[0]) if cal is not None else raw
+def predict(artifact, tf):
+    row=model_row(tf,artifact)
+    x=pd.DataFrame([{c:row.get(c,0.0) for c in artifact["features"]}]).replace([np.inf,-np.inf],np.nan).fillna(0.0)
+    raw=float(artifact["model"].predict_proba(x)[0,1])
+    cal=artifact.get("calibrator")
+    prob=float(cal.predict([raw])[0]) if cal is not None else raw
     return int(row["side"]),prob,float(row["primary_score"])
-
 
 def micro():
     with ThreadPoolExecutor(max_workers=4) as ex:
@@ -330,7 +369,7 @@ def main():
             micro_=micro()
             if time.time()>=next_refresh or cached is None:
                 dfs,tf,structs=fetch_timeframes(); cached=(dfs,tf,structs); next_refresh=time.time()+KLINE_REFRESH_SECONDS
-            dfs,tf,structs=cached; now=now_utc(); side,p,ps=predict(artifact,tf,now); candle=str(tf["15m"]["timestamp"])
+            dfs,tf,structs=cached; now=now_utc(); side,p,ps=predict(artifact,tf); candle=str(tf["15m"]["timestamp"])
             if candle!=last_candle:
                 last_candle=candle; print(f"[15M] close={candle} model={'BUY' if side==1 else 'SELL' if side==-1 else 'WAIT'} p={p:.3f} score={ps:.1f}",flush=True)
             ob_hist=(ob_hist+[float(micro_["ob20"])])[-5:]
