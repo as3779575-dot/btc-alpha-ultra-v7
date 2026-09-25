@@ -2,12 +2,19 @@ name: BTC Alpha Ultra V7 Deep Live Monitor
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/live.yml"
   schedule:
     - cron: "7 0 * * *"
     - cron: "57 5 * * *"
     - cron: "47 11 * * *"
     - cron: "37 17 * * *"
     - cron: "27 23 * * *"
+
+concurrency:
+  group: btc-alpha-ultra-v7-live
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -23,7 +30,8 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Syntax check\n        run: python -m py_compile deep_monitor.py\n      - name: Verify BTC and ETH models
+      - name: Syntax check
+        run: python -m py_compile deep_monitor.py
         run: |
           python - <<'PY'
           import json
@@ -61,10 +69,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          SYMBOL=BTCUSDT           MODEL_PATH=models/selected_model.joblib           STATE_PATH=runtime_state_BTCUSDT.json           python deep_monitor.py &
+          SYMBOL=BTCUSDT \
+          MODEL_PATH=models/selected_model.joblib \
+          python deep_monitor.py &
           BTC_PID=$!
 
-          SYMBOL=ETHUSDT           MODEL_PATH=models/ETHUSDT/selected_model.joblib           STATE_PATH=runtime_state_ETHUSDT.json           python deep_monitor.py &
+          SYMBOL=ETHUSDT \
+          MODEL_PATH=models/ETHUSDT/selected_model.joblib \
+          python deep_monitor.py &
           ETH_PID=$!
 
           trap 'kill "$BTC_PID" "$ETH_PID" 2>/dev/null || true' EXIT
