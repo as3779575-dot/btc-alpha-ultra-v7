@@ -23,7 +23,6 @@ MODEL_PATH = Path(os.getenv("MODEL_PATH", "models/selected_model.joblib"))
 SCAN_SECONDS = max(10, int(os.getenv("SCAN_SECONDS", "15")))
 KLINE_REFRESH_SECONDS = max(30, int(os.getenv("KLINE_REFRESH_SECONDS", "60")))
 MAX_ALERTS_PER_UTC_DAY = max(0, int(os.getenv("MAX_ALERTS_PER_UTC_DAY", "0")))  # 0 = unlimited daily alerts
-ALERT_COOLDOWN_SECONDS = max(900, int(os.getenv("ALERT_COOLDOWN_SECONDS", "2700")))
 MAX_SPREAD_BPS = float(os.getenv("MAX_SPREAD_BPS", "5.0"))
 MAX_LATE_R = float(os.getenv("MAX_LATE_R", "0.55"))
 STRUCTURE_MIN = float(os.getenv("STRUCTURE_MIN", "12.0"))
@@ -360,7 +359,7 @@ def main():
                 if side==-1 and pc>3.0: options_ok=False
             all_ok=(prob_ok and ht_ok and setup_ok and flow_ok and vol_ok and conf>=STRUCTURE_MIN and spread_ok and ob_ok and room_ok and risk_ok and late_ok and deriv_ok and news_ok and options_ok)
             state=load_state()
-            if (MAX_ALERTS_PER_UTC_DAY > 0 and state["alerts"] >= MAX_ALERTS_PER_UTC_DAY) or time.time()-float(state.get("last_alert",0))<ALERT_COOLDOWN_SECONDS: all_ok=False
+            if MAX_ALERTS_PER_UTC_DAY > 0 and state["alerts"] >= MAX_ALERTS_PER_UTC_DAY: all_ok=False
             print(f"[SCAN] {'BUY' if side==1 else 'SELL' if side==-1 else 'WAIT'} p={p:.3f} conf={conf:.1f} 4H={structs['4h']['direction']} 1H={structs['1h']['direction']} 30M={structs['30m']['direction']} 15M={structs['15m']['direction']} ATR={atr_pct:.2f}% OB={micro_['ob20']:.2f} spread={micro_['spread_bps']} room={room/max(risk,1e-12):.2f}R OIΔ={deriv.get('oi_change_pct')} taker={deriv.get('taker_ratio')} funding={micro_.get('funding')} -> {'ALERT' if all_ok else 'WAIT'}",flush=True)
             if all_ok:
                 tp25=entry+(2.5*risk if side==1 else -2.5*risk)
