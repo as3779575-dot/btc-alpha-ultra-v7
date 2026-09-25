@@ -17,6 +17,8 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Syntax check
+        run: python -m py_compile bootstrap.py build_models.py historical_engine.py download_binance.py
       - name: Build and validate strict historical model
         env:
           HIST_START: '2020-01-01'
