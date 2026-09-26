@@ -376,7 +376,7 @@ def main():
     if not artifact.get("hard_requirements_passed"): raise SystemExit("Model artifact failed hard requirements.")
     hold=artifact.get("selection",{}).get("holdout",{}); oos=float(artifact.get("selection",{}).get("pooled_oos_win_rate") or 0); holdwr=float(hold.get("win_rate") or 0)
     if oos<0.70 or holdwr<0.70 or not hold.get("passed"): raise SystemExit("Historical >70% deployment gate not satisfied.")
-    gate=artifact.get("signal_gate",{}); threshold=float(gate.get("threshold",0.80)); margin=float(gate.get("margin",0.05)); barrier=artifact.get("barrier",{"stop_atr":1.2,"target_r":2.0,"horizon_minutes":60})
+    gate=artifact.get("signal_gate",{}); threshold=float(os.getenv("LIVE_PROBABILITY_THRESHOLD","0.70")); margin=float(gate.get("margin",0.05)); barrier=artifact.get("barrier",{"stop_atr":1.2,"target_r":2.0,"horizon_minutes":60})
     stop_atr=float(barrier.get("stop_atr",1.2)); target_r=float(barrier.get("target_r",2.0))
     print(f"[START] {SYMBOL} | historical OOS={oos:.3%} holdout={holdwr:.3%} | model p>={threshold:.2f} | MTF 4H/1H/30M/15M + derivatives/options/news | unlimited alerts | no time cooldown",flush=True)
     try:
