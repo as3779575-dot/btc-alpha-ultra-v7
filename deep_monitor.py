@@ -234,11 +234,20 @@ def predict(artifact, tf):
     return int(row["side"]),prob,float(row["primary_score"])
 
 def micro():
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        f1=ex.submit(get,FAPI,"/fapi/v1/ticker/bookTicker",{"symbol":SYMBOL}); f2=ex.submit(get,FAPI,"/fapi/v1/depth",{"symbol":SYMBOL,"limit":50}); f3=ex.submit(get,FAPI,"/fapi/v1/premiumIndex",{"symbol":SYMBOL}); f4=ex.submit(get,FAPI,"/fapi/v1/symbolAdlRisk",{"symbol":SYMBOL})
-        ticker,depth,prem,adl=f1.result(),f2.result(),f3.result(),f4.result()
-    bid=float(ticker.get("bidPrice",0)); ask=float(ticker.get("askPrice",0)); mid=(bid+ask)/2 if bid and ask else float(get(FAPI,"/fapi/v1/ticker/price",{"symbol":SYMBOL}).get("price",0))
-    bids=[(float(x[0]),float(x[1])) for x in depth.get("bids",[])[:20]]; asks=[(float(x[0]),float(x[1])) for x in depth.get("asks",[])[:20]]
+    # Price, depth and funding are required market inputs; ADL risk is informational only.
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f1=ex.submit(get,FAPI,"/fapi/v1/ticker/bookTicker",{"symbol":SYMBOL})
+        f2=ex.submit(get,FAPI,"/fapi/v1/depth",{"symbol":SYMBOL,"limit":50})
+        f3=ex.submit(get,FAPI,"/fapi/v1/premiumIndex",{"symbol":SYMBOL})
+        ticker,depth,prem=f1.result(),f2.result(),f3.result()
+    try:
+        adl=get(FAPI,"/fapi/v1/symbolAdlRisk",{"symbol":SYMBOL})
+    except Exception:
+        adl={"adlRisk":"unknown"}
+    bid=float(ticker.get("bidPrice",0)); ask=float(ticker.get("askPrice",0))
+    mid=(bid+ask)/2 if bid and ask else float(get(FAPI,"/fapi/v1/ticker/price",{"symbol":SYMBOL}).get("price",0))
+    bids=[(float(x[0]),float(x[1])) for x in depth.get("bids",[])[:20]]
+    asks=[(float(x[0]),float(x[1])) for x in depth.get("asks",[])[:20]]
     bqty=sum(q for _,q in bids); aqty=sum(q for _,q in asks)
     return {"bid":bid,"ask":ask,"mid":mid,"ob20":bqty/max(aqty,1e-12),"spread_bps":((ask-bid)/max(mid,1e-12)*10000 if bid and ask else None),"mark":float(prem.get("markPrice",mid)),"index":float(prem.get("indexPrice",mid)),"funding":float(prem.get("lastFundingRate",0) or 0),"adl":str(adl.get("adlRisk","unknown"))}
 
@@ -281,7 +290,7 @@ def options_snapshot(spot:float):
         syms=info.get("optionSymbols",[])
         if not syms: return {"available":False,"reason":"no optionSymbols"}
         now=int(time.time()*1000)
-        expiries=sorted({int(s.get("expiryDate",0)) for s in syms if s.get("underlying")==SYMBOL and int(s.get("expiryDate",0))>now})[:4]
+        expiries=sorted({int(s.get("expiryDate",0)) for s in syms if s.get("underlying")==SYMBOL.replace("USDT","") and int(s.get("expiryDate",0))>now})[:4]
         totals=[]; near=[]
         for exp in expiries:
             exp_code=datetime.fromtimestamp(exp/1000, tz=timezone.utc).strftime("%y%m%d")
@@ -295,7 +304,7 @@ def options_snapshot(spot:float):
                 if sym.endswith("-C"): call+=val
                 elif sym.endswith("-P"): put+=val
             totals.append({"expiry":exp_code,"call_oi_usd":call,"put_oi_usd":put,"put_call":put/max(call,1e-12)})
-            candidates=[s for s in syms if s.get("underlying")==SYMBOL and int(s.get("expiryDate",0))==exp and abs(float(s.get("strikePrice",0))-spot)/max(spot,1) <= 0.03]
+            candidates=[s for s in syms if s.get("underlying")==SYMBOL.replace("USDT","") and int(s.get("expiryDate",0))==exp and abs(float(s.get("strikePrice",0))-spot)/max(spot,1) <= 0.03]
             candidates=sorted(candidates,key=lambda s:abs(float(s.get("strikePrice",0))-spot))[:2]
             for c in candidates:
                 try:
