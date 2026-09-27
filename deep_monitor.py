@@ -18,6 +18,16 @@ import requests
 
 SYMBOL = os.getenv("SYMBOL", "BTCUSDT").upper()
 FAPI = "https://fapi.binance.com"
+FAPI_BASES = [
+    os.getenv("BINANCE_FUTURES_API_BASE", FAPI),
+    "https://fapi.binance.com",
+    "https://fapi1.binance.com",
+    "https://fapi2.binance.com",
+    "https://fapi3.binance.com",
+    "https://fapi4.binance.com",
+]
+FAPI_BASES = list(dict.fromkeys(FAPI_BASES))
+FAPI_ACTIVE = {"base": FAPI_BASES[0]}
 EAPI = "https://eapi.binance.com"
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "models/selected_model.joblib"))
 SCAN_SECONDS = max(10, int(os.getenv("SCAN_SECONDS", "15")))
@@ -44,9 +54,22 @@ def now_utc() -> datetime:
 
 
 def get(base: str, path: str, params: dict | None = None):
-    r = requests.get(base + path, params=params or {}, timeout=REQUEST_TIMEOUT)
-    r.raise_for_status()
-    return r.json()
+    bases = FAPI_BASES if base == FAPI else [base]
+    last_exc = None
+    start = bases.index(FAPI_ACTIVE["base"]) if base == FAPI and FAPI_ACTIVE["base"] in bases else 0
+    ordered = bases[start:] + bases[:start]
+    for candidate in ordered:
+        try:
+            r = requests.get(candidate + path, params=params or {}, timeout=REQUEST_TIMEOUT)
+            r.raise_for_status()
+            if base == FAPI and FAPI_ACTIVE["base"] != candidate:
+                FAPI_ACTIVE["base"] = candidate
+                print(f"[BINANCE] futures API failover active: {candidate}", flush=True)
+            return r.json()
+        except requests.RequestException as exc:
+            last_exc = exc
+            continue
+    raise last_exc if last_exc is not None else RuntimeError(f"No API base configured for {base}")
 
 
 def fetch_klines(interval: str, limit: int = 400) -> pd.DataFrame:
