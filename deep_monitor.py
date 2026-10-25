@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import joblib
@@ -32,6 +33,8 @@ EAPI = "https://eapi.binance.com"
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "models/selected_model.joblib"))
 SCAN_SECONDS = max(10, int(os.getenv("SCAN_SECONDS", "15")))
 KLINE_REFRESH_SECONDS = max(30, int(os.getenv("KLINE_REFRESH_SECONDS", "60")))
+MICRO_REFRESH_SECONDS = max(30, int(os.getenv("MICRO_REFRESH_SECONDS", "60")))
+BINANCE_MIN_REQUEST_INTERVAL_SECONDS = max(0.0, float(os.getenv("BINANCE_MIN_REQUEST_INTERVAL_SECONDS", "0.6")))
 MAX_SPREAD_BPS = float(os.getenv("MAX_SPREAD_BPS", "5.0"))
 MAX_LATE_R = float(os.getenv("MAX_LATE_R", "0.55"))
 STRUCTURE_MIN = float(os.getenv("STRUCTURE_MIN", "12.0"))
@@ -53,6 +56,19 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class FuturesRateLimitError(RuntimeError):
+    """Raised while Binance has asked this process to stop requesting Futures data."""
+
+
+FAPI_REQUEST_LOCK = Lock()
+FAPI_REQUEST_STATE = {
+    "next_request_at": 0.0,
+    "backoff_until": 0.0,
+    "consecutive_429": 0,
+    "last_429_at": 0.0,
+}
+
+
 def get(base: str, path: str, params: dict | None = None):
     bases = FAPI_BASES if base == FAPI else [base]
     last_exc = None
@@ -60,12 +76,62 @@ def get(base: str, path: str, params: dict | None = None):
     ordered = bases[start:] + bases[:start]
     for candidate in ordered:
         try:
-            r = requests.get(candidate + path, params=params or {}, timeout=REQUEST_TIMEOUT)
+            if base == FAPI:
+                # Serialize Futures REST requests within this symbol process. Binance limits
+                # are IP-based; rotating hosts after a 429 does not evade that limit.
+                with FAPI_REQUEST_LOCK:
+                    now = time.time()
+                    backoff = float(FAPI_REQUEST_STATE["backoff_until"])
+                    if now < backoff:
+                        remaining = max(1, int(backoff - now))
+                        raise FuturesRateLimitError(
+                            f"Binance Futures REST backoff active for {remaining}s; skipping request"
+                        )
+                    wait = float(FAPI_REQUEST_STATE["next_request_at"]) - now
+                    if wait > 0:
+                        time.sleep(wait)
+                    try:
+                        r = requests.get(candidate + path, params=params or {}, timeout=REQUEST_TIMEOUT)
+                    except requests.RequestException as exc:
+                        FAPI_REQUEST_STATE["next_request_at"] = time.time() + BINANCE_MIN_REQUEST_INTERVAL_SECONDS
+                        last_exc = exc
+                        continue
+                    now = time.time()
+                    FAPI_REQUEST_STATE["next_request_at"] = now + BINANCE_MIN_REQUEST_INTERVAL_SECONDS
+                    if r.status_code in (418, 429):
+                        last_429 = float(FAPI_REQUEST_STATE["last_429_at"])
+                        if now - last_429 > 900:
+                            FAPI_REQUEST_STATE["consecutive_429"] = 0
+                        FAPI_REQUEST_STATE["consecutive_429"] = int(FAPI_REQUEST_STATE["consecutive_429"]) + 1
+                        default_retry = 180.0 if r.status_code == 418 else 60.0
+                        try:
+                            retry_after = float(r.headers.get("Retry-After", default_retry))
+                        except (TypeError, ValueError):
+                            retry_after = default_retry
+                        exponential = min(900.0, 60.0 * (2 ** min(int(FAPI_REQUEST_STATE["consecutive_429"]) - 1, 4)))
+                        retry_seconds = max(default_retry, retry_after, exponential)
+                        FAPI_REQUEST_STATE["last_429_at"] = now
+                        FAPI_REQUEST_STATE["backoff_until"] = max(
+                            float(FAPI_REQUEST_STATE["backoff_until"]), now + retry_seconds
+                        )
+                        weight = r.headers.get("X-MBX-USED-WEIGHT-1M", "unknown")
+                        message = (
+                            f"Binance Futures HTTP {r.status_code} at {candidate}{path}; "
+                            f"retry-after={retry_seconds:.0f}s; used-weight-1m={weight}. "
+                            "Honouring backoff; no rapid host rotation."
+                        )
+                        print(f"[BINANCE RATE LIMIT] {message}", flush=True)
+                        raise FuturesRateLimitError(message)
+            else:
+                r = requests.get(candidate + path, params=params or {}, timeout=REQUEST_TIMEOUT)
+
             r.raise_for_status()
             if base == FAPI and FAPI_ACTIVE["base"] != candidate:
                 FAPI_ACTIVE["base"] = candidate
                 print(f"[BINANCE] futures API failover active: {candidate}", flush=True)
             return r.json()
+        except FuturesRateLimitError:
+            raise
         except requests.RequestException as exc:
             last_exc = exc
             continue
@@ -206,17 +272,23 @@ def model_row(tf: dict[str,dict], artifact: dict) -> dict[str,float]:
     row["dow_cos"]=math.cos(2*math.pi*ts.weekday()/7)
 
     trend=row["trend_votes"]; mom=row["momentum_votes"]; flow=row["flow_score"]
-    if artifact.get("strategy") == "trend_alignment":
+    strategy=artifact.get("strategy")
+    bu=row.get("5m_breakout_up",0.0); bd=row.get("5m_breakout_down",0.0)
+    # Keep the live direction/score rules equivalent to historical_engine.primary_side.
+    # Mismatches change the trained model's feature inputs and the generated side.
+    if strategy == "trend_alignment":
         score=trend + 0.5*mom
-    elif artifact.get("strategy") == "trend_flow":
+        side=1.0 if score>=3.0 else -1.0 if score<=-3.0 else 0.0
+    elif strategy == "trend_flow":
         score=trend + 0.5*mom + 2.0*flow
-    elif artifact.get("strategy") == "breakout_flow":
-        bu=row.get("5m_breakout_up",0.0); bd=row.get("5m_breakout_down",0.0)
-        score=trend + 0.5*mom + 2.0*flow + 2.0*bu - 2.0*bd
+        side=1.0 if score>=3.5 else -1.0 if score<=-3.5 else 0.0
+    elif strategy == "breakout_flow":
+        score=trend + 2.0*flow + 3.0*(bu-bd)
+        side=1.0 if bu>0 and flow>=0.10 and trend>=1 else -1.0 if bd>0 and flow<=-0.10 and trend<=-1 else 0.0
     else:
-        score=trend + 0.5*mom
+        raise ValueError(f"Unknown strategy in model artifact: {strategy}")
 
-    row["side"]=1.0 if score>=3.0 else -1.0 if score<=-3.0 else 0.0
+    row["side"]=side
     row["primary_score"]=float(score)
     strategies=artifact.get("config",{}).get("strategies",("trend_alignment","trend_flow","breakout_flow"))
     row["strategy_id"]=float(list(strategies).index(artifact["strategy"]))
@@ -415,18 +487,23 @@ def main():
         tg(f"📡 {SYMBOL} Alpha Ultra V7 Telegram connection successful")
         tg(f"✅ {SYMBOL} Alpha Ultra V7 Deep monitor started\nHistorical OOS: {oos:.1%} | holdout: {holdwr:.1%}\nMTF + structure + derivatives + options + news\nPrimary target: {target_r:.1f}R | unlimited alerts | no time cooldown")
     except Exception as e: print(f"[TELEGRAM] startup failed: {e}",flush=True)
-    cached=None; last_candle=None; next_refresh=0; deriv_cache={}; deriv_next=0; opt_cache={}; opt_next=0; news_cache={}; news_next=0; ob_hist=[]; sent_keys=set(); alert_count=0
+    cached=None; last_candle=None; next_refresh=0; micro_cache=None; micro_next=0; deriv_cache={}; deriv_next=0; opt_cache={}; opt_next=0; news_cache={}; news_next=0; ob_hist=[]; sent_keys=set(); alert_count=0; last_error_alert=0
     while True:
         t0=time.time()
         try:
-            micro_=micro()
+            fresh_micro = micro_cache is None or time.time() >= micro_next
+            if fresh_micro:
+                micro_cache = micro()
+                micro_next = time.time() + MICRO_REFRESH_SECONDS
+            micro_ = micro_cache
             if time.time()>=next_refresh or cached is None:
                 dfs,tf,structs=fetch_timeframes(); cached=(dfs,tf,structs); next_refresh=time.time()+KLINE_REFRESH_SECONDS
             dfs,tf,structs=cached; now=now_utc(); side,p,ps=predict(artifact,tf); candle=str(tf["15m"]["timestamp"])
             if candle!=last_candle:
                 last_candle=candle; print(f"[15M] close={candle} model={'BUY' if side==1 else 'SELL' if side==-1 else 'WAIT'} p={p:.3f} score={ps:.1f}",flush=True)
-            ob_hist=(ob_hist+[float(micro_["ob20"])])[-5:]
-            ob_ok=(side==1 and sum(x>=1.10 for x in ob_hist)>=2) or (side==-1 and sum(x<=0.90 for x in ob_hist)>=2)
+            if fresh_micro:
+                ob_hist=(ob_hist+[float(micro_["ob20"])])[-5:]
+            ob_ok=len(ob_hist)>=2 and ((side==1 and sum(x>=1.10 for x in ob_hist)>=2) or (side==-1 and sum(x<=0.90 for x in ob_hist)>=2))
             spread_ok=micro_["spread_bps"] is not None and micro_["spread_bps"]<=MAX_SPREAD_BPS
             prob_ok=side!=0 and p>=threshold and (p-0.5)>=margin
             ht_ok=side!=0 and structs["4h"]["direction"]==side and structs["1h"]["direction"]==side
@@ -452,8 +529,10 @@ def main():
                 pc=float(totals[0].get("put_call",1)); opt_context=f"near put/call OI={pc:.2f}"
                 if side==1 and pc<0.35: options_ok=False
                 if side==-1 and pc>3.0: options_ok=False
-            all_ok=(prob_ok and ht_ok and setup_ok and flow_ok and vol_ok and conf>=STRUCTURE_MIN and spread_ok and ob_ok and room_ok and risk_ok and late_ok and deriv_ok and news_ok and options_ok)
-            print(f"[SCAN] {'BUY' if side==1 else 'SELL' if side==-1 else 'WAIT'} p={p:.3f} conf={conf:.1f} 4H={structs['4h']['direction']} 1H={structs['1h']['direction']} 30M={structs['30m']['direction']} 15M={structs['15m']['direction']} ATR={atr_pct:.2f}% OB={micro_['ob20']:.2f} spread={micro_['spread_bps']} room={room/max(risk,1e-12):.2f}R OIΔ={deriv.get('oi_change_pct')} taker={deriv.get('taker_ratio')} funding={micro_.get('funding')} -> {'ALERT' if all_ok else 'WAIT'}",flush=True)
+            gate_status={"probability":prob_ok,"4H_1H_alignment":ht_ok,"30M_15M_setup":setup_ok,"taker_flow":flow_ok,"ATR_range":vol_ok,"confluence":conf>=STRUCTURE_MIN,"spread":spread_ok,"order_book":ob_ok,"2R_room":room_ok,"risk_size":risk_ok,"not_late":late_ok,"derivatives":deriv_ok,"news":news_ok,"options_veto":options_ok}
+            blockers=[name for name,passed in gate_status.items() if not passed]
+            all_ok=not blockers
+            print(f"[SCAN] {'BUY' if side==1 else 'SELL' if side==-1 else 'WAIT'} p={p:.3f} conf={conf:.1f} 4H={structs['4h']['direction']} 1H={structs['1h']['direction']} 30M={structs['30m']['direction']} 15M={structs['15m']['direction']} ATR={atr_pct:.2f}% OB={micro_['ob20']:.2f} spread={micro_['spread_bps']} room={room/max(risk,1e-12):.2f}R OIΔ={deriv.get('oi_change_pct')} taker={deriv.get('taker_ratio')} funding={micro_.get('funding')} -> {'ALERT' if all_ok else 'WAIT'} blockers={','.join(blockers) if blockers else 'none'}",flush=True)
             signal_key=setup_key(SYMBOL,side,candle) if side else ""
             if all_ok and signal_key not in sent_keys:
                 tp25=entry+(2.5*risk if side==1 else -2.5*risk)
@@ -467,7 +546,16 @@ def main():
                      f"Room to HTF obstacle: {room/risk:.2f}R | late move: {late_r:.2f}R\n\n"
                      f"Why passed: {'; '.join((reasons+dr)[:8])}\n\nManual execution only. Historical win rate is not a guarantee of future performance.")
                 tg(msg); sent_keys.add(signal_key); alert_count += 1; print(f"[ALERT] sent {alert_count} (new 15M setup)",flush=True)
-        except Exception as e: print(f"[ERROR] {type(e).__name__}: {e} -> WAIT",flush=True)
+        except Exception as e:
+            error_text=f"{type(e).__name__}: {e}"
+            print(f"[ERROR] {error_text} -> WAIT (no signal from this failed scan)",flush=True)
+            # Inform the operator without sending repeated alerts during a persistent outage.
+            if time.time()-last_error_alert >= 1800:
+                try:
+                    tg(f"⚠️ {SYMBOL} Alpha Ultra V7 monitor error\nThe scan could not complete, so no new signal was evaluated.\nError: {error_text[:900]}\nThe monitor will retry automatically; do not treat this as a trading signal.")
+                    last_error_alert=time.time()
+                except Exception as notify_error:
+                    print(f"[TELEGRAM ERROR ALERT FAILED] {type(notify_error).__name__}: {notify_error}",flush=True)
         time.sleep(max(0.1,SCAN_SECONDS-(time.time()-t0)))
 
 
